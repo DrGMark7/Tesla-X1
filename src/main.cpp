@@ -1,0 +1,140 @@
+#include <Arduino.h>
+#include <esp_now.h>
+#include <WiFi.h>
+#include "config.h"
+
+struct DrivingData { float angle; int power; };
+struct FeedbackData { bool emergencyBrakeActive; float distance; };
+
+// Global Variables
+char currentGear = 'D';
+bool isSafetyActive = true;  
+DrivingData driveCmd = {0, 100};
+float currentSmoothPower = 0;
+
+void TaskMotorControl(void *pvParameters);
+float readDistance();
+
+void onDataRecv(const uint8_t * mac, const uint8_t *incomingData, int len) {
+    // 0 = Mode, 1 = Safety, 2 = Driving
+    uint8_t type = incomingData[0];
+
+    if (type == 0) {
+        currentGear = (char)incomingData[1];
+        Serial.printf("Gear Changed to: %c\n", currentGear);
+    } 
+    else if (type == 1) {
+        isSafetyActive = (bool)incomingData[1];
+        Serial.printf("Safety Mode: %s\n", isSafetyActive ? "ON" : "OFF");
+    }
+    else if (type == 2) {
+        memcpy(&driveCmd, &incomingData[1], sizeof(DrivingData));
+    }
+}
+
+void onDataSent(const uint8_t *mac_addr, esp_now_send_status_t status) {
+    Serial.print("\r\n[System] Last Packet Send Status: ");
+    if (status == ESP_NOW_SEND_SUCCESS) {
+        Serial.println("Delivery Success (Connected)");
+    } else {
+        Serial.println("Delivery Fail (Disconnected/Out of Range)");
+    }
+}
+
+void setup() {
+
+    Serial.begin(115200);
+    WiFi.mode(WIFI_STA);
+	
+	Serial.print("ESP32 Board MAC Address:  ");
+  	Serial.println(WiFi.macAddress());
+    
+	if (esp_now_init() != ESP_OK) return;
+    esp_now_register_recv_cb(onDataRecv);
+
+    esp_now_register_send_cb(onDataSent);
+
+    esp_now_peer_info_t peerInfo = {};
+    memcpy(peerInfo.peer_addr, REMOTE_ADDR, 6);
+    peerInfo.channel = 0;
+    peerInfo.encrypt = false;
+    esp_now_add_peer(&peerInfo);
+
+    xTaskCreatePinnedToCore(TaskMotorControl, "MotorTask", 10000, NULL, 1, NULL, 1);
+}
+
+void TaskMotorControl(void *pvParameters) {
+    ledcSetup(0, PWM_FREQ, PWM_RES); ledcAttachPin(M1_PWM, 0);
+    ledcSetup(1, PWM_FREQ, PWM_RES); ledcAttachPin(M2_PWM, 1);
+    pinMode(M1_IN1, OUTPUT); pinMode(M1_IN2, OUTPUT);
+    pinMode(M2_IN1, OUTPUT); pinMode(M2_IN2, OUTPUT);
+    pinMode(PIN_TRIG, OUTPUT); pinMode(PIN_ECHO, INPUT);
+
+    for (;;) {
+        float distance = readDistance();
+        
+        if (distance > 0 && distance <= LOG_DISTANCE) {
+            Serial.printf("[LOG] Object at: %.2f cm\n", distance);
+        }
+
+        bool obstacle = (distance > 0 && distance < STOP_DISTANCE);
+        bool emergency = (isSafetyActive && obstacle && (currentGear == 'D' || currentGear == 'S'));
+
+        if (emergency) {
+            digitalWrite(M1_IN1, HIGH); digitalWrite(M1_IN2, HIGH);
+            digitalWrite(M2_IN1, HIGH); digitalWrite(M2_IN2, HIGH);
+            ledcWrite(0, 0); ledcWrite(1, 0);
+            currentSmoothPower = 0;
+
+            FeedbackData fb = {true, distance};
+            esp_now_send(REMOTE_ADDR, (uint8_t *) &fb, sizeof(fb));
+        }
+        else if (currentGear != 'N') {
+            float targetPWM = map(driveCmd.power, 0, 100, 0, 255); // Map power to target range
+            
+            if (currentGear == 'S') {
+                currentSmoothPower = targetPWM;
+            } else {
+                if (currentSmoothPower < targetPWM) currentSmoothPower += ACCEL_STEP;
+                else if (currentSmoothPower > targetPWM) currentSmoothPower -= BRAKE_STEP;
+                currentSmoothPower = constrain(currentSmoothPower, 0, 255);
+            }
+
+            float leftSpeed = currentSmoothPower, rightSpeed = currentSmoothPower;
+            if (driveCmd.angle > 0) {
+				rightSpeed *= (1.0 - (driveCmd.angle / 90.0));
+			}
+            else if (driveCmd.angle < 0) {
+				leftSpeed *= (1.0 - (abs(driveCmd.angle) / 90.0));
+			}
+
+            if (currentGear == 'R') {
+                digitalWrite(M1_IN1, LOW); digitalWrite(M1_IN2, HIGH);
+                digitalWrite(M2_IN1, LOW); digitalWrite(M2_IN2, HIGH);
+            } else {
+                digitalWrite(M1_IN1, HIGH); digitalWrite(M1_IN2, LOW);
+                digitalWrite(M2_IN1, HIGH); digitalWrite(M2_IN2, LOW);
+            }
+
+			Serial.printf("[SPEED] L = %.2f; R = %.2f \n", leftSpeed, rightSpeed);
+            ledcWrite(0, (int)leftSpeed); ledcWrite(1, (int)rightSpeed);
+        }
+        else {
+            ledcWrite(0, 0); ledcWrite(1, 0);
+            digitalWrite(M1_IN1, LOW); digitalWrite(M1_IN2, LOW);
+            digitalWrite(M2_IN1, LOW); digitalWrite(M2_IN2, LOW);
+            currentSmoothPower = 0;
+        }
+        vTaskDelay(5 / portTICK_PERIOD_MS);
+    }
+}
+
+float readDistance() {
+    digitalWrite(PIN_TRIG, LOW); delayMicroseconds(2);
+    digitalWrite(PIN_TRIG, HIGH); delayMicroseconds(10);
+    digitalWrite(PIN_TRIG, LOW);
+    long duration = pulseIn(PIN_ECHO, HIGH, 25000); 
+    return (duration == 0) ? 999 : (duration * 0.034 / 2);
+}
+
+void loop() { vTaskDelay(1000 / portTICK_PERIOD_MS); }
