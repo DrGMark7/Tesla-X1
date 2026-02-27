@@ -1,5 +1,6 @@
 #include <Arduino.h>
 #include <esp_now.h>
+#include <esp_wifi.h>
 #include <WiFi.h>
 #include "config.h"
 
@@ -8,8 +9,8 @@ struct FeedbackData { bool emergencyBrakeActive; float distance; };
 
 // Global Variables
 char currentGear = 'D';
-bool isSafetyActive = true;  
-DrivingData driveCmd = {0, 100};
+bool isSafetyActive = false;  
+DrivingData driveCmd = {0, 0};
 float currentSmoothPower = 0;
 
 void TaskMotorControl(void *pvParameters);
@@ -29,15 +30,7 @@ void onDataRecv(const uint8_t * mac, const uint8_t *incomingData, int len) {
     }
     else if (type == 2) {
         memcpy(&driveCmd, &incomingData[1], sizeof(DrivingData));
-    }
-}
-
-void onDataSent(const uint8_t *mac_addr, esp_now_send_status_t status) {
-    Serial.print("\r\n[System] Last Packet Send Status: ");
-    if (status == ESP_NOW_SEND_SUCCESS) {
-        Serial.println("Delivery Success (Connected)");
-    } else {
-        Serial.println("Delivery Fail (Disconnected/Out of Range)");
+        // Serial.printf("[RX] Type 2 | Angle: %.2f | Power: %d\n", driveCmd.angle, driveCmd.power);
     }
 }
 
@@ -48,15 +41,14 @@ void setup() {
 	
 	Serial.print("ESP32 Board MAC Address:  ");
   	Serial.println(WiFi.macAddress());
-    
+
+    esp_wifi_set_channel(1, WIFI_SECOND_CHAN_NONE);
 	if (esp_now_init() != ESP_OK) return;
     esp_now_register_recv_cb(onDataRecv);
 
-    esp_now_register_send_cb(onDataSent);
-
     esp_now_peer_info_t peerInfo = {};
     memcpy(peerInfo.peer_addr, REMOTE_ADDR, 6);
-    peerInfo.channel = 0;
+    peerInfo.channel = 1;
     peerInfo.encrypt = false;
     esp_now_add_peer(&peerInfo);
 
@@ -73,13 +65,15 @@ void TaskMotorControl(void *pvParameters) {
     for (;;) {
         float distance = readDistance();
         
-        if (distance > 0 && distance <= LOG_DISTANCE) {
-            Serial.printf("[LOG] Object at: %.2f cm\n", distance);
-        }
+        // if (distance > 0 && distance <= LOG_DISTANCE) {
+        //     Serial.printf("[LOG] Object at: %.2f cm\n", distance);
+        // }
 
         bool obstacle = (distance > 0 && distance < STOP_DISTANCE);
         bool emergency = (isSafetyActive && obstacle && (currentGear == 'D' || currentGear == 'S'));
-
+        
+        //! Please Debug for case that can't back for when car in safy mode
+        
         if (emergency) {
             digitalWrite(M1_IN1, HIGH); digitalWrite(M1_IN2, HIGH);
             digitalWrite(M2_IN1, HIGH); digitalWrite(M2_IN2, HIGH);
