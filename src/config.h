@@ -15,9 +15,9 @@
 #define M1_IN1 27
 #define M1_IN2 26
 
-#define M2_PWM 22
-#define M2_IN1 14
-#define M2_IN2 25
+#define M2_PWM 21
+#define M2_IN1 19
+#define M2_IN2 18
 
 // --- PWM Settings ---
 #define PWM_FREQ 5000
