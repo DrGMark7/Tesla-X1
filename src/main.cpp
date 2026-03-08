@@ -2,6 +2,7 @@
 #include <esp_now.h>
 #include <esp_wifi.h>
 #include <WiFi.h>
+#include <Wire.h>
 #include "config.h"
 
 struct DrivingData { float angle; int power; };
@@ -10,11 +11,13 @@ struct FeedbackData { bool emergencyBrakeActive; float distance; };
 // Global Variables
 char currentGear = 'D';
 bool isSafetyActive = false;  
+bool isBuzzerActive = false;
 DrivingData driveCmd = {0, 0};
 float currentSmoothPower = 0;
+volatile float globalDistance = 999.0;
 
 void TaskMotorControl(void *pvParameters);
-float readDistance();
+void onI2CRecv(int bytes);
 
 void onDataRecv(const uint8_t * mac, const uint8_t *incomingData, int len) {
     // 0 = Mode, 1 = Safety, 2 = Driving
@@ -31,14 +34,31 @@ void onDataRecv(const uint8_t * mac, const uint8_t *incomingData, int len) {
     else if (type == 2) {
         memcpy(&driveCmd, &incomingData[1], sizeof(DrivingData));
         // Serial.printf("[RX] Type 2 | Angle: %.2f | Power: %d\n", driveCmd.angle, driveCmd.power);
+    }else if (type == 3) {
+        // For Buzzer on car, not implemented yet
+        isBuzzerActive = (bool)incomingData[1];
+        Serial.printf("Buzzer: %s\n", isBuzzerActive ? "ON" : "OFF");
+    }
+}
+
+void BuzzerControl(bool isBuzzerActive) {
+    if (isBuzzerActive) {
+        digitalWrite(BUZZER_PIN, HIGH);
+    } else {
+        digitalWrite(BUZZER_PIN, LOW);
     }
 }
 
 void setup() {
 
     Serial.begin(115200);
+    Wire.begin(0x08);
+    Wire.onReceive(onI2CRecv);
     WiFi.mode(WIFI_STA);
 	
+    pinMode(BUZZER_PIN, OUTPUT);
+    digitalWrite(BUZZER_PIN, LOW);
+
 	Serial.print("ESP32 Board MAC Address:  ");
   	Serial.println(WiFi.macAddress());
 
@@ -49,7 +69,7 @@ void setup() {
     esp_now_peer_info_t peerInfo = {};
     memcpy(peerInfo.peer_addr, REMOTE_ADDR, 6);
     peerInfo.channel = 1;
-    peerInfo.encrypt = false;
+    peerInfo.encrypt = false; // For simplicity, no encryption
     esp_now_add_peer(&peerInfo);
 
     xTaskCreatePinnedToCore(TaskMotorControl, "MotorTask", 10000, NULL, 1, NULL, 1);
@@ -60,16 +80,17 @@ void TaskMotorControl(void *pvParameters) {
     ledcSetup(1, PWM_FREQ, PWM_RES); ledcAttachPin(M2_PWM, 1);
     pinMode(M1_IN1, OUTPUT); pinMode(M1_IN2, OUTPUT);
     pinMode(M2_IN1, OUTPUT); pinMode(M2_IN2, OUTPUT);
-    pinMode(PIN_TRIG, OUTPUT); pinMode(PIN_ECHO, INPUT);
 
     for (;;) {
-        float distance = readDistance();
-        
-        // if (distance > 0 && distance <= LOG_DISTANCE) {
-        //     Serial.printf("[LOG] Object at: %.2f cm\n", distance);
-        // }
 
-        bool obstacle = (distance > 0 && distance < STOP_DISTANCE);
+        float distance = globalDistance;
+        
+        BuzzerControl(isBuzzerActive);
+        if (distance > 0 && distance <= LOG_DISTANCE) {
+            Serial.printf("[LOG] Object at: %.2f cm\n", distance);
+        }
+
+        bool obstacle = (distance > 0.1f && distance < STOP_DISTANCE);
         bool emergency = (isSafetyActive && obstacle && (currentGear == 'D' || currentGear == 'S'));
         
         //! Please Debug for case that can't back for when car in safy mode
@@ -123,12 +144,18 @@ void TaskMotorControl(void *pvParameters) {
     }
 }
 
-float readDistance() {
-    digitalWrite(PIN_TRIG, LOW); delayMicroseconds(2);
-    digitalWrite(PIN_TRIG, HIGH); delayMicroseconds(10);
-    digitalWrite(PIN_TRIG, LOW);
-    long duration = pulseIn(PIN_ECHO, HIGH, 25000); 
-    return (duration == 0) ? 999 : (duration * 0.034 / 2);
+void onI2CRecv(int bytes) {
+
+    if (bytes == 4) {
+        uint8_t buf[4];
+        for (int i = 0; i < 4; i++) buf[i] = Wire.read();
+        
+        globalDistance = buf[0] | (buf[1]<<8) | (buf[2]<<16) | (buf[3]<<24);
+        
+        if (globalDistance == 9999) Serial.println("OUT OF RANGE");
+        else Serial.printf("Distance: %d cm\n", globalDistance);
+    }
+
 }
 
 void loop() { vTaskDelay(1000 / portTICK_PERIOD_MS); }
