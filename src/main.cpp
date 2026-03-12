@@ -14,7 +14,7 @@ bool isSafetyActive = false;
 bool isBuzzerActive = false;
 DrivingData driveCmd = {0, 0};
 float currentSmoothPower = 0;
-volatile float globalDistance = 999.0;
+volatile uint32_t globalDistance = 999;
 
 void TaskMotorControl(void *pvParameters);
 void onI2CRecv(int bytes);
@@ -52,7 +52,13 @@ void BuzzerControl(bool isBuzzerActive) {
 void setup() {
 
     Serial.begin(115200);
-    Wire.begin(0x08);
+
+    Serial.printf("Before Wire.begin -> SDA: %d, SCL: %d\n", digitalRead(PIN_SDA), digitalRead(PIN_SCL));
+    bool success = Wire.begin(0x08);  //? First Parameter is only I2C Address
+    if (!success) {
+        Serial.println("I2C Slave Init Failed - Check Pins/Pull-ups");
+    }
+
     Wire.onReceive(onI2CRecv);
     WiFi.mode(WIFI_STA);
 	
@@ -83,14 +89,14 @@ void TaskMotorControl(void *pvParameters) {
 
     for (;;) {
 
-        float distance = globalDistance;
+        int distance = globalDistance;
         
         BuzzerControl(isBuzzerActive);
         if (distance > 0 && distance <= LOG_DISTANCE) {
-            Serial.printf("[LOG] Object at: %.2f cm\n", distance);
+            Serial.printf("[LOG] Object at: %d cm\n", distance);
         }
 
-        bool obstacle = (distance > 0.1f && distance < STOP_DISTANCE);
+        bool obstacle = (distance > 1 && distance < STOP_DISTANCE);
         bool emergency = (isSafetyActive && obstacle && (currentGear == 'D' || currentGear == 'S'));
         
         //! Please Debug for case that can't back for when car in safy mode
@@ -145,17 +151,15 @@ void TaskMotorControl(void *pvParameters) {
 }
 
 void onI2CRecv(int bytes) {
-
     if (bytes == 4) {
         uint8_t buf[4];
         for (int i = 0; i < 4; i++) buf[i] = Wire.read();
         
-        globalDistance = buf[0] | (buf[1]<<8) | (buf[2]<<16) | (buf[3]<<24);
+        uint32_t tempDist;
+        memcpy(&tempDist, buf, 4); 
+        globalDistance = tempDist;
         
-        if (globalDistance == 9999) Serial.println("OUT OF RANGE");
-        else Serial.printf("Distance: %d cm\n", globalDistance);
     }
-
 }
 
 void loop() { vTaskDelay(1000 / portTICK_PERIOD_MS); }
