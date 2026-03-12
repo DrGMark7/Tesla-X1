@@ -2,6 +2,10 @@
 
 PlatformIO firmware for an `ESP32 DevKit`-class board that drives a two-motor vehicle over `ESP-NOW`, receives obstacle distance data over `I2C`, and applies an emergency stop when safety mode is enabled.
 
+### Diagram
+
+![T](./Diagram.png)
+
 ## Overview
 
 This firmware does four things:
@@ -41,17 +45,17 @@ The active PlatformIO environment is `esp32dev` using the Arduino framework.
 
 Defined in `src/config.h`:
 
-| Function | GPIO |
-| --- | ---: |
-| I2C SDA | 21 |
-| I2C SCL | 22 |
-| Motor 1 PWM | 4 |
-| Motor 1 IN1 | 17 |
-| Motor 1 IN2 | 16 |
-| Motor 2 PWM | 19 |
-| Motor 2 IN1 | 5 |
-| Motor 2 IN2 | 18 |
-| Buzzer | 23 |
+| Function    | GPIO |
+| ----------- | ---: |
+| I2C SDA     |   21 |
+| I2C SCL     |   22 |
+| Motor 1 PWM |    4 |
+| Motor 1 IN1 |   17 |
+| Motor 1 IN2 |   16 |
+| Motor 2 PWM |   19 |
+| Motor 2 IN1 |    5 |
+| Motor 2 IN2 |   18 |
+| Buzzer      |   23 |
 
 ## Control Model
 
